@@ -1,0 +1,159 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.5'
+          tools: composer:v2
+          coverage: pcov
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.0'
+
+      - name: Setup Application
+        env:
+          COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
+        run: composer setup
+
+      - name: Run CI Checks
+        run: composer ci:check
+
+      - name: Run Test Coverage
+        run: composer test:coverage
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_BUCKET: ${{ vars.AWS_BUCKET }}
+          AWS_ENDPOINT: ${{ vars.AWS_ENDPOINT }}
+          AWS_URL: ${{ vars.AWS_URL }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+          APP_NAME: ${{ vars.APP_NAME }}
+          APP_URL: ${{ vars.APP_URL }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "${SSH_USER}" ]; then
+            echo "ERROR: SSH_USER variable is not configured" >&2
+            exit 1
+          fi
+
+          if [ -z "${SSH_HOST}" ]; then
+            echo "ERROR: SSH_HOST secret is not configured" >&2
+            exit 1
+          fi
+
+          if [ -z "${CLOUDFLARE_TUNNEL_TOKEN}" ]; then
+            echo "ERROR: CLOUDFLARE_TUNNEL_TOKEN secret is not configured" >&2
+            exit 1
+          fi
+
+          if [ -z "${COMPOSER_AUTH}" ]; then
+            echo "ERROR: COMPOSER_AUTH secret is not configured" >&2
+            exit 1
+          fi
+
+          if [ -z "${AWS_ACCESS_KEY_ID}" ] || [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then
+            echo "ERROR: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets are not configured" >&2
+            exit 1
+          fi
+
+          if [ -z "${AWS_BUCKET}" ] || [ -z "${AWS_ENDPOINT}" ]; then
+            echo "ERROR: AWS_BUCKET / AWS_ENDPOINT variables are not configured" >&2
+            exit 1
+          fi
+
+          if [ -z "${APP_URL}" ]; then
+            echo "ERROR: APP_URL variable is not configured" >&2
+            exit 1
+          fi
+
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          REMOTE_PATH="${DEPLOY_PATH:-/opt/${REPO_NAME}}"
+          ORIGIN_URL="https://github.com/${GITHUB_REPOSITORY}.git"
+
+          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+            "${SSH_USER}@${SSH_HOST}" \
+            bash -s <<EOF
+          set -euo pipefail
+          export CLOUDFLARE_TUNNEL_TOKEN=$(printf %q "$CLOUDFLARE_TUNNEL_TOKEN")
+          export COMPOSER_AUTH=$(printf %q "$COMPOSER_AUTH")
+          export AWS_ACCESS_KEY_ID=$(printf %q "$AWS_ACCESS_KEY_ID")
+          export AWS_SECRET_ACCESS_KEY=$(printf %q "$AWS_SECRET_ACCESS_KEY")
+          export AWS_BUCKET=$(printf %q "$AWS_BUCKET")
+          export AWS_ENDPOINT=$(printf %q "$AWS_ENDPOINT")
+          export AWS_URL=$(printf %q "$AWS_URL")
+          export AWS_DEFAULT_REGION=$(printf %q "${AWS_DEFAULT_REGION:-auto}")
+          export APP_NAME=$(printf %q "${APP_NAME:-Laravel}")
+          export APP_URL=$(printf %q "$APP_URL")
+          export DEPLOY_PATH=$(printf %q "$REMOTE_PATH")
+          export GH_TOKEN=$(printf %q "$GH_TOKEN")
+          export DEPLOY_BRANCH=main
+          export REPO_URL=$(printf %q "$ORIGIN_URL")
+
+          APP_DIR="\${DEPLOY_PATH:-/opt/app}"
+
+          if [ ! -d "\$APP_DIR/.git" ]; then
+            echo "==> First deploy: cloning into \$APP_DIR"
+            rm -rf "\$APP_DIR"
+            mkdir -p "\$(dirname "\$APP_DIR")"
+            git clone --branch main \
+              "https://x-access-token:\${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "\$APP_DIR"
+            git -C "\$APP_DIR" remote set-url origin "\$REPO_URL"
+          fi
+
+          cd "\$APP_DIR"
+          bash ./scripts/deploy.sh
+          EOF

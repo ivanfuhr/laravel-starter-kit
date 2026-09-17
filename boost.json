@@ -1,0 +1,24 @@
+{
+    "agents": [
+        "cursor"
+    ],
+    "cloud": false,
+    "guidelines": true,
+    "mcp": true,
+    "nightwatch": false,
+    "packages": [
+        "livewire/blaze",
+        "pestphp/pest-plugin-agent"
+    ],
+    "sail": false,
+    "skills": [
+        "infer-conventions",
+        "laravel-best-practices",
+        "testing-best-practices",
+        "fluxui-development",
+        "livewire-development",
+        "tailwindcss-development",
+        "blaze-optimize",
+        "pest-plugin-agent"
+    ]
+}

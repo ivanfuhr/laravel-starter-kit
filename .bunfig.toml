@@ -1,0 +1,3 @@
+[install]
+# Match former .npmrc ignore-scripts=true
+ignoreScripts = true

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+COMPOSE_FILE="${COMPOSE_FILE:-compose.dev.yaml}"
+COMPOSE=(docker compose -f "${COMPOSE_FILE}")
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker is not running." >&2
+  exit 1
+fi
+
+ensure_composer_auth() {
+  if [ ! -s secrets/composer_auth ]; then
+    echo "Missing secrets/composer_auth (Flux Pro COMPOSER_AUTH JSON)." >&2
+    echo "mkdir -p secrets && printf '%s' \"\$COMPOSER_AUTH\" > secrets/composer_auth" >&2
+    exit 1
+  fi
+}
+
+workspace() {
+  "${COMPOSE[@]}" exec workspace "$@"
+}
+
+display_help() {
+  cat <<'EOF'
+Laravel starter kit local Docker helper (Sail-style)
+
+Usage:
+  ./bin/dev COMMAND [options] [arguments]
+
+Docker Compose:
+  up [-d]          Start the stack
+  stop             Stop the stack
+  down             Stop and remove containers
+  restart          Restart services
+  ps               Show container status
+  logs [service]   Tail logs
+
+App tooling (runs in workspace unless noted):
+  artisan|art ...  php artisan ...
+  php ...          php ...
+  composer ...     composer ...
+  bun ...          bun ...
+  bunx ...         bunx ...
+  test ...         php artisan test ...
+  pest ...         vendor/bin/pest ...
+  pint ...         vendor/bin/pint ...
+  shell|bash       Interactive shell in workspace
+
+Databases:
+  psql             PostgreSQL CLI (postgres service)
+  redis            redis-cli (redis service)
+
+Other:
+  open             Print the app URL
+  help             Show this help
+
+Unknown commands are passed to: docker compose -f compose.dev.yaml ...
+EOF
+}
+
+if [ $# -eq 0 ]; then
+  display_help
+  exit 0
+fi
+
+cmd="$1"
+shift || true
+
+case "${cmd}" in
+  help|-h|--help)
+    display_help
+    ;;
+  up)
+    ensure_composer_auth
+    "${COMPOSE[@]}" up "$@"
+    ;;
+  stop|down|restart|ps|logs|build|pull|config)
+    "${COMPOSE[@]}" "${cmd}" "$@"
+    ;;
+  artisan|art)
+    workspace php artisan "$@"
+    ;;
+  php)
+    workspace php "$@"
+    ;;
+  composer)
+    workspace composer "$@"
+    ;;
+  bun)
+    workspace bun "$@"
+    ;;
+  bunx)
+    workspace bunx "$@"
+    ;;
+  test)
+    workspace php artisan test "$@"
+    ;;
+  pest)
+    workspace ./vendor/bin/pest "$@"
+    ;;
+  pint)
+    workspace ./vendor/bin/pint "$@"
+    ;;
+  shell|bash)
+    workspace bash "$@"
+    ;;
+  psql)
+    "${COMPOSE[@]}" exec postgres psql -U "${DB_USERNAME:-laravel}" -d "${DB_DATABASE:-laravel}" "$@"
+    ;;
+  redis)
+    "${COMPOSE[@]}" exec redis redis-cli "$@"
+    ;;
+  open)
+    port="${NGINX_PORT:-8080}"
+    if [ -f .env ]; then
+      port="$(grep -E '^NGINX_PORT=' .env | cut -d= -f2- || true)"
+      port="${port:-8080}"
+    fi
+    echo "http://localhost:${port}"
+    ;;
+  *)
+    "${COMPOSE[@]}" "${cmd}" "$@"
+    ;;
+esac
